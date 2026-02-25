@@ -1,5 +1,6 @@
 import discord
-from discord.ext import commands, app_commands
+from discord.ext import commands
+from discord import app_commands
 import re
 import base64
 import json
