@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, app_commands
 import re
 import base64
 import json
@@ -12,7 +12,7 @@ TOKEN = ""
 GUILD_ID = 1475937462726426634
 SYSTEM_CHANNEL_ID = 1476001984082346134
 
-BOT_VERSION = "1.0.6"
+BOT_VERSION = "1.0.7"
 START_TIME = time.time()
 
 logging.basicConfig(
@@ -116,7 +116,7 @@ async def info(interaction: discord.Interaction):
     process = psutil.Process()
 
     cpu_usage = process.cpu_percent(interval=0.5)
-    memory_usage = process.memory_info().rss / 1024 / 1024
+    memory_usage = process.memory_info().rss / 1024 / 1024  # MB
 
     member_count = interaction.guild.member_count
 
@@ -124,12 +124,36 @@ async def info(interaction: discord.Interaction):
         f"""
 **crumb info**
 
+crumb is a private bot made for this server, it's use is primarily for automation to make this server even better!
+
+**stats**
 **Uptime:** {hours}h {minutes}m {seconds}s  
 **Version:** {BOT_VERSION}  
 **CPU Usage:** {cpu_usage:.1f}%  
 **Memory Usage:** {memory_usage:.1f} MB  
 **Members:** {member_count}
+
+**open source?**
+yuh you know i got that open sourced flow... [github](https://github.com/PxslGames/crumb)
+just follow the license ok?
 """,
+        ephemeral=True
+    )
+
+@bot.tree.command(
+    name="status",
+    description="change crumb's rpc (admin only lol)",
+    guild=guild
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def status(interaction: discord.Interaction, text: str):
+
+    await bot.change_presence(
+        activity=discord.CustomActivity(name=text)
+    )
+
+    await interaction.response.send_message(
+        f"Status updated to: {text}",
         ephemeral=True
     )
 
