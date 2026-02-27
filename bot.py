@@ -15,8 +15,23 @@ TOKEN = ""
 GUILD_ID = 1475937462726426634
 SYSTEM_CHANNEL_ID = 1476001984082346134
 
-BOT_VERSION = "1.0.8"
+BOT_VERSION = "1.0.9"
 START_TIME = time.time()
+
+WARNS_FILE = "warns.json"
+
+def load_warns():
+    try:
+        with open(WARNS_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_warns(data):
+    with open(WARNS_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+warns = load_warns()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -102,6 +117,95 @@ async def ping(interaction: discord.Interaction):
         random.choice(PING_MESSAGES),
         ephemeral=True
     )
+
+@bot.tree.command(name="warn", description="Warn a member", guild=guild)
+@app_commands.checks.has_permissions(moderate_members=True)
+async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
+
+    if member.bot:
+        await interaction.response.send_message("you cant warn bots.", ephemeral=True)
+        return
+
+    guild_id = str(interaction.guild.id)
+    user_id = str(member.id)
+
+    if guild_id not in warns:
+        warns[guild_id] = {}
+
+    if user_id not in warns[guild_id]:
+        warns[guild_id][user_id] = []
+
+    warn_data = {
+        "reason": reason,
+        "moderator": str(interaction.user),
+        "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    }
+
+    warns[guild_id][user_id].append(warn_data)
+    save_warns(warns)
+
+    try:
+        await member.send(
+            f"You have been **warned** in {interaction.guild.name}.\nReason: {reason}"
+        )
+    except:
+        pass
+
+    total_warns = len(warns[guild_id][user_id])
+
+    await interaction.response.send_message(
+        f"{member.mention} has been warned.\nReason: {reason}\nTotal warns: {total_warns}",
+        ephemeral=True
+    )
+
+    if total_warns == 3:
+        try:
+            await member.timeout(datetime.timedelta(minutes=10), reason="3 warnings reached")
+        except:
+            pass
+    
+@bot.tree.command(name="warns", description="View a member's warnings", guild=guild)
+@app_commands.checks.has_permissions(moderate_members=True)
+async def view_warns(interaction: discord.Interaction, member: discord.Member):
+
+    guild_id = str(interaction.guild.id)
+    user_id = str(member.id)
+
+    if guild_id not in warns or user_id not in warns[guild_id]:
+        await interaction.response.send_message(
+            f"{member.mention} has no warnings.",
+            ephemeral=True
+        )
+        return
+
+    user_warns = warns[guild_id][user_id]
+
+    msg = f"**Warnings for {member}:**\n\n"
+    for i, w in enumerate(user_warns, 1):
+        msg += f"**{i}.** {w['reason']}\nMod: {w['moderator']}\nTime: {w['timestamp']}\n\n"
+
+    await interaction.response.send_message(msg, ephemeral=True)
+
+@bot.tree.command(name="clearwarns", description="Clear all warnings for a member", guild=guild)
+@app_commands.checks.has_permissions(moderate_members=True)
+async def clear_warns(interaction: discord.Interaction, member: discord.Member):
+
+    guild_id = str(interaction.guild.id)
+    user_id = str(member.id)
+
+    if guild_id in warns and user_id in warns[guild_id]:
+        warns[guild_id][user_id] = []
+        save_warns(warns)
+
+        await interaction.response.send_message(
+            f"All warnings cleared for {member.mention}.",
+            ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"{member.mention} has no warnings.",
+            ephemeral=True
+        )
 
 @bot.tree.command(name="ban", description="Ban a member", guild=guild)
 @app_commands.checks.has_permissions(ban_members=True)
