@@ -8,12 +8,14 @@ import random
 import logging
 import psutil
 import time
+import datetime
+import asyncio
 
 TOKEN = ""
 GUILD_ID = 1475937462726426634
 SYSTEM_CHANNEL_ID = 1476001984082346134
 
-BOT_VERSION = "1.0.7"
+BOT_VERSION = "1.0.8"
 START_TIME = time.time()
 
 logging.basicConfig(
@@ -98,6 +100,171 @@ PING_MESSAGES = [
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(
         random.choice(PING_MESSAGES),
+        ephemeral=True
+    )
+
+@bot.tree.command(name="ban", description="Ban a member", guild=guild)
+@app_commands.checks.has_permissions(ban_members=True)
+async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+
+    if member.top_role >= interaction.user.top_role:
+        await interaction.response.send_message("you cant ban someone with equal or higher role.", ephemeral=True)
+        return
+
+    try:
+        await member.send(f"You have been **banned** from {interaction.guild.name}.\nReason: {reason}")
+    except:
+        pass
+
+    await member.ban(reason=reason)
+    await interaction.response.send_message(
+        f"{member.mention} has been banned.\nReason: {reason}",
+        ephemeral=True
+    )
+
+@bot.tree.command(name="kick", description="Kick a member", guild=guild)
+@app_commands.checks.has_permissions(kick_members=True)
+async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+
+    if member.top_role >= interaction.user.top_role:
+        await interaction.response.send_message("you cant kick someone with equal or higher role.", ephemeral=True)
+        return
+
+    try:
+        await member.send(f"You have been **kicked** from {interaction.guild.name}.\nReason: {reason}")
+    except:
+        pass
+
+    await member.kick(reason=reason)
+    await interaction.response.send_message(
+        f"{member.mention} has been kicked.\nReason: {reason}",
+        ephemeral=True
+    )
+
+@bot.tree.command(name="mute", description="Timeout a member", guild=guild)
+@app_commands.checks.has_permissions(moderate_members=True)
+async def mute(interaction: discord.Interaction, member: discord.Member, minutes: int, reason: str = "No reason provided"):
+
+    if minutes < 1 or minutes > 10080:
+        await interaction.response.send_message("minutes must be between 1 and 10080 (7 days).", ephemeral=True)
+        return
+
+    duration = datetime.timedelta(minutes=minutes)
+
+    try:
+        await member.send(f"You have been **muted** in {interaction.guild.name} for {minutes} minutes.\nReason: {reason}")
+    except:
+        pass
+
+    await member.timeout(duration, reason=reason)
+    await interaction.response.send_message(
+        f"{member.mention} has been muted for {minutes} minutes.\nReason: {reason}",
+        ephemeral=True
+    )
+
+    async def notify_unmute():
+        await asyncio.sleep(minutes * 60)
+        try:
+            await member.send(f"Your mute in {interaction.guild.name} has **expired**. You can speak again!")
+        except:
+            pass
+
+    bot.loop.create_task(notify_unmute())
+
+@bot.tree.command(name="unmute", description="Remove timeout from a member", guild=guild)
+@app_commands.checks.has_permissions(moderate_members=True)
+async def unmute(interaction: discord.Interaction, member: discord.Member):
+
+    await member.timeout(None)
+
+    try:
+        await member.send(f"You have been **unmuted** in {interaction.guild.name}. You can speak now!")
+    except:
+        pass
+
+    await interaction.response.send_message(
+        f"{member.mention} has been unmuted.",
+        ephemeral=True
+    )
+
+@bot.tree.command(name="unban", description="Unban a user by ID", guild=guild)
+@app_commands.checks.has_permissions(ban_members=True)
+async def unban(interaction: discord.Interaction, user_id: str):
+
+    try:
+        user = await bot.fetch_user(int(user_id))
+        await interaction.guild.unban(user)
+
+        await interaction.response.send_message(
+            f"{user} has been unbanned.",
+            ephemeral=True
+        )
+
+    except:
+        await interaction.response.send_message(
+            "invalid user id or user not banned.",
+            ephemeral=True
+        )
+    
+@bot.tree.command(name="slowmode", description="Set slowmode for this channel", guild=guild)
+@app_commands.checks.has_permissions(manage_channels=True)
+async def slowmode(interaction: discord.Interaction, seconds: int):
+
+    if seconds < 0 or seconds > 21600:
+        await interaction.response.send_message("slowmode must be between 0 and 21600 seconds (6 hours).", ephemeral=True)
+        return
+
+    await interaction.channel.edit(slowmode_delay=seconds)
+
+    await interaction.response.send_message(
+        f"slowmode set to {seconds} seconds.",
+        ephemeral=True
+    )
+
+@bot.tree.command(name="nickname", description="Change a member's nickname", guild=guild)
+@app_commands.checks.has_permissions(manage_nicknames=True)
+async def nickname(interaction: discord.Interaction, member: discord.Member, new_name: str):
+
+    if member.top_role >= interaction.user.top_role:
+        await interaction.response.send_message("you cant change nickname of equal or higher role.", ephemeral=True)
+        return
+
+    await member.edit(nick=new_name)
+
+    await interaction.response.send_message(
+        f"{member.mention}'s nickname changed to **{new_name}**.",
+        ephemeral=True
+    )
+
+@bot.tree.command(
+    name="purge",
+    description="Delete a number of messages from this channel",
+    guild=guild
+)
+@app_commands.describe(amount="Number of messages to delete")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def purge(interaction: discord.Interaction, amount: int):
+
+    if amount < 1:
+        await interaction.response.send_message(
+            "you need to delete at least 1 message.",
+            ephemeral=True
+        )
+        return
+
+    if amount > 100:
+        await interaction.response.send_message(
+            "you can only delete up to 100 messages at once.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    deleted = await interaction.channel.purge(limit=amount)
+
+    await interaction.followup.send(
+        f"deleted {len(deleted)} messages.",
         ephemeral=True
     )
 
