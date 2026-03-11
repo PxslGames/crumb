@@ -12,10 +12,10 @@ import datetime
 import asyncio
 
 TOKEN = ""
-GUILD_ID = 1475937462726426634
-SYSTEM_CHANNEL_ID = 1476001984082346134
+GUILD_ID = 1358840188469772581
+SYSTEM_CHANNEL_ID = 1370542289981542400
 
-BOT_VERSION = "1.0.9"
+BOT_VERSION = "1.1.0"
 START_TIME = time.time()
 
 WARNS_FILE = "warns.json"
@@ -73,6 +73,8 @@ LEET_MAP = {
     "@": "a",
     "$": "s"
 }
+
+CRUMB_RESPONSES = ["what, what do you want?", "yeah?", "huh?", "you called?", "ai mode activated", "im here, whats up?", "you rang?", "crumb at your service", "yessir?"]
 
 def normalize(text: str) -> str:
     text = text.lower()
@@ -463,8 +465,8 @@ async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    if message.content.lower() == "crumb":
-        await message.reply("what, what do you want?")
+    if message.content.lower() == "crumb" or "@":
+        await message.reply(random.choice(CRUMB_RESPONSES))
 
     INVITE_REGEX = re.compile(r"(?:discord(?:\.gg|\.com/invite)/[a-zA-Z0-9]+)")
 
