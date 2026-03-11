@@ -465,7 +465,7 @@ async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    if message.content.lower() == "crumb" or "@":
+    if "crumb" in message.content.lower().strip() or bot.user.mentioned_in(message):
         await message.reply(random.choice(CRUMB_RESPONSES))
 
     INVITE_REGEX = re.compile(r"(?:discord(?:\.gg|\.com/invite)/[a-zA-Z0-9]+)")
