@@ -1,2 +1,2 @@
 # crumb
-the private discord bot for snack box
+the private discord bot for pxsl.dev
