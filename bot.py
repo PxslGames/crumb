@@ -12,10 +12,8 @@ import datetime
 import asyncio
 
 TOKEN = ""
-GUILD_ID = 1358840188469772581
-SYSTEM_CHANNEL_ID = 1370542289981542400
 
-BOT_VERSION = "1.1.1"
+BOT_VERSION = "1.1.2"
 START_TIME = time.time()
 
 WARNS_FILE = "warns.json"
@@ -48,7 +46,14 @@ intents = discord.Intents.all()
 intents.message_content = True
 bot = commands.Bot(command_prefix="c.", intents=intents)
 
-guild = discord.Object(id=GUILD_ID)
+def get_system_channel(guild: discord.Guild):
+    if guild.system_channel and guild.system_channel.permissions_for(guild.me).send_messages:
+        return guild.system_channel
+
+    for channel in guild.text_channels:
+        if channel.permissions_for(guild.me).send_messages:
+            return channel
+    return None
 
 ENCODED_BANNED = (
     "WyJuaWdnZXIiLCAibmlnZ2EiLCAiZmFnIiwgImZhZ2dvdCIsICJjaGluayIsICJ0cmFubnkiLCAi"
@@ -64,35 +69,38 @@ decoded_json = base64.b64decode(ENCODED_BANNED).decode("utf-8")
 banned_words = json.loads(decoded_json)
 
 LEET_MAP = {
-    "0": "o",
-    "1": "i",
-    "3": "e",
-    "4": "a",
-    "5": "s",
-    "7": "t",
-    "@": "a",
-    "$": "s"
+    "0": "o","1": "i","3": "e","4": "a",
+    "5": "s","7": "t","@": "a","$": "s"
 }
 
 CRUMB_RESPONSES = ["what, what do you want?", "yeah?", "huh?", "you called?", "ai mode activated", "im here, whats up?", "you rang?", "crumb at your service", "yessir?"]
 
 def normalize(text: str) -> str:
     text = text.lower()
-
     for k, v in LEET_MAP.items():
         text = text.replace(k, v)
-
     text = re.sub(r'[^a-z\s]', '', text)
     text = re.sub(r'(.)\1{2,}', r'\1', text)
-
     return text
 
 NORMALIZED_BANNED = [normalize(word) for word in banned_words]
 
 @bot.event
 async def setup_hook():
-    await bot.tree.sync(guild=guild)
-    log.info("Commands synced.")
+    for guild in bot.guilds:
+        try:
+            await bot.tree.sync(guild=guild)
+            log.info(f"Synced commands to {guild.name}")
+        except Exception as e:
+            log.error(f"Sync failed for {guild.name}: {e}")
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    log.info(f"Joined {guild.name}")
+    try:
+        await bot.tree.sync(guild=guild)
+    except Exception as e:
+        log.error(e)
 
 @bot.event
 async def on_ready():
@@ -109,33 +117,21 @@ PING_MESSAGES = [
     "dont say 'crumb' in chat btw",
 ]
 
-@bot.tree.command(
-    name="ping",
-    description="check if crumb is online",
-    guild=guild
-)
+@bot.tree.command(name="ping", description="check if crumb is online")
 async def ping(interaction: discord.Interaction):
-    await interaction.response.send_message(
-        random.choice(PING_MESSAGES),
-        ephemeral=True
-    )
+    await interaction.response.send_message(random.choice(PING_MESSAGES), ephemeral=True)
 
-@bot.tree.command(name="warn", description="Warn a member", guild=guild)
+@bot.tree.command(name="warn", description="Warn a member")
 @app_commands.checks.has_permissions(moderate_members=True)
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
 
     if member.bot:
-        await interaction.response.send_message("you cant warn bots.", ephemeral=True)
-        return
+        return await interaction.response.send_message("you cant warn bots.", ephemeral=True)
 
-    guild_id = str(interaction.guild.id)
-    user_id = str(member.id)
+    gid = str(interaction.guild.id)
+    uid = str(member.id)
 
-    if guild_id not in warns:
-        warns[guild_id] = {}
-
-    if user_id not in warns[guild_id]:
-        warns[guild_id][user_id] = []
+    warns.setdefault(gid, {}).setdefault(uid, [])
 
     warn_data = {
         "reason": reason,
@@ -143,370 +139,180 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
         "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
     }
 
-    warns[guild_id][user_id].append(warn_data)
+    warns[gid][uid].append(warn_data)
     save_warns(warns)
 
     try:
-        await member.send(
-            f"You have been **warned** in {interaction.guild.name}.\nReason: {reason}"
-        )
+        await member.send(f"You have been warned in {interaction.guild.name}\nReason: {reason}")
     except:
         pass
 
-    total_warns = len(warns[guild_id][user_id])
+    total_warns = len(warns[gid][uid])
 
     await interaction.response.send_message(
-        f"{member.mention} has been warned.\nReason: {reason}\nTotal warns: {total_warns}",
+        f"{member.mention} warned.\nTotal warns: {total_warns}",
         ephemeral=True
     )
 
     if total_warns == 3:
         try:
-            await member.timeout(datetime.timedelta(minutes=10), reason="3 warnings reached")
+            await member.timeout(datetime.timedelta(minutes=10))
         except:
             pass
-    
-@bot.tree.command(name="warns", description="View a member's warnings", guild=guild)
+
+@bot.tree.command(name="warns", description="View warnings")
 @app_commands.checks.has_permissions(moderate_members=True)
 async def view_warns(interaction: discord.Interaction, member: discord.Member):
 
-    guild_id = str(interaction.guild.id)
-    user_id = str(member.id)
+    gid = str(interaction.guild.id)
+    uid = str(member.id)
 
-    if guild_id not in warns or user_id not in warns[guild_id]:
-        await interaction.response.send_message(
-            f"{member.mention} has no warnings.",
-            ephemeral=True
-        )
-        return
+    if gid not in warns or uid not in warns[gid]:
+        return await interaction.response.send_message("no warnings", ephemeral=True)
 
-    user_warns = warns[guild_id][user_id]
-
-    msg = f"**Warnings for {member}:**\n\n"
-    for i, w in enumerate(user_warns, 1):
-        msg += f"**{i}.** {w['reason']}\nMod: {w['moderator']}\nTime: {w['timestamp']}\n\n"
+    msg = ""
+    for i, w in enumerate(warns[gid][uid], 1):
+        msg += f"{i}. {w['reason']} ({w['timestamp']})\n"
 
     await interaction.response.send_message(msg, ephemeral=True)
 
-@bot.tree.command(name="clearwarns", description="Clear all warnings for a member", guild=guild)
+@bot.tree.command(name="clearwarns", description="Clear warnings")
 @app_commands.checks.has_permissions(moderate_members=True)
 async def clear_warns(interaction: discord.Interaction, member: discord.Member):
 
-    guild_id = str(interaction.guild.id)
-    user_id = str(member.id)
+    gid = str(interaction.guild.id)
+    uid = str(member.id)
 
-    if guild_id in warns and user_id in warns[guild_id]:
-        warns[guild_id][user_id] = []
+    if gid in warns and uid in warns[gid]:
+        warns[gid][uid] = []
         save_warns(warns)
-
-        await interaction.response.send_message(
-            f"All warnings cleared for {member.mention}.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("cleared", ephemeral=True)
     else:
-        await interaction.response.send_message(
-            f"{member.mention} has no warnings.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("no warns", ephemeral=True)
 
-@bot.tree.command(name="ban", description="Ban a member", guild=guild)
+@bot.tree.command(name="ban", description="Ban member")
 @app_commands.checks.has_permissions(ban_members=True)
-async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason"):
 
     if member.top_role >= interaction.user.top_role:
-        await interaction.response.send_message("you cant ban someone with equal or higher role.", ephemeral=True)
-        return
+        return await interaction.response.send_message("role too high", ephemeral=True)
 
     try:
-        await member.send(f"You have been **banned** from {interaction.guild.name}.\nReason: {reason}")
+        await member.send(f"Banned from {interaction.guild.name}\nReason: {reason}")
     except:
         pass
 
     await member.ban(reason=reason)
-    await interaction.response.send_message(
-        f"{member.mention} has been banned.\nReason: {reason}",
-        ephemeral=True
-    )
+    await interaction.response.send_message("banned", ephemeral=True)
 
-@bot.tree.command(name="kick", description="Kick a member", guild=guild)
+@bot.tree.command(name="kick", description="Kick member")
 @app_commands.checks.has_permissions(kick_members=True)
-async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason"):
 
     if member.top_role >= interaction.user.top_role:
-        await interaction.response.send_message("you cant kick someone with equal or higher role.", ephemeral=True)
-        return
-
-    try:
-        await member.send(f"You have been **kicked** from {interaction.guild.name}.\nReason: {reason}")
-    except:
-        pass
+        return await interaction.response.send_message("role too high", ephemeral=True)
 
     await member.kick(reason=reason)
-    await interaction.response.send_message(
-        f"{member.mention} has been kicked.\nReason: {reason}",
-        ephemeral=True
-    )
+    await interaction.response.send_message("kicked", ephemeral=True)
 
-@bot.tree.command(name="mute", description="Timeout a member", guild=guild)
+@bot.tree.command(name="mute", description="Timeout member")
 @app_commands.checks.has_permissions(moderate_members=True)
-async def mute(interaction: discord.Interaction, member: discord.Member, minutes: int, reason: str = "No reason provided"):
+async def mute(interaction: discord.Interaction, member: discord.Member, minutes: int):
 
-    if minutes < 1 or minutes > 10080:
-        await interaction.response.send_message("minutes must be between 1 and 10080 (7 days).", ephemeral=True)
-        return
+    await member.timeout(datetime.timedelta(minutes=minutes))
+    await interaction.response.send_message("muted", ephemeral=True)
 
-    duration = datetime.timedelta(minutes=minutes)
-
-    try:
-        await member.send(f"You have been **muted** in {interaction.guild.name} for {minutes} minutes.\nReason: {reason}")
-    except:
-        pass
-
-    await member.timeout(duration, reason=reason)
-    await interaction.response.send_message(
-        f"{member.mention} has been muted for {minutes} minutes.\nReason: {reason}",
-        ephemeral=True
-    )
-
-    async def notify_unmute():
-        await asyncio.sleep(minutes * 60)
-        try:
-            await member.send(f"Your mute in {interaction.guild.name} has **expired**. You can speak again!")
-        except:
-            pass
-
-    bot.loop.create_task(notify_unmute())
-
-@bot.tree.command(name="unmute", description="Remove timeout from a member", guild=guild)
+@bot.tree.command(name="unmute", description="Unmute member")
 @app_commands.checks.has_permissions(moderate_members=True)
 async def unmute(interaction: discord.Interaction, member: discord.Member):
 
     await member.timeout(None)
+    await interaction.response.send_message("unmuted", ephemeral=True)
 
-    try:
-        await member.send(f"You have been **unmuted** in {interaction.guild.name}. You can speak now!")
-    except:
-        pass
-
-    await interaction.response.send_message(
-        f"{member.mention} has been unmuted.",
-        ephemeral=True
-    )
-
-@bot.tree.command(name="unban", description="Unban a user by ID", guild=guild)
+@bot.tree.command(name="unban", description="Unban user")
 @app_commands.checks.has_permissions(ban_members=True)
 async def unban(interaction: discord.Interaction, user_id: str):
 
-    try:
-        user = await bot.fetch_user(int(user_id))
-        await interaction.guild.unban(user)
+    user = await bot.fetch_user(int(user_id))
+    await interaction.guild.unban(user)
+    await interaction.response.send_message("unbanned", ephemeral=True)
 
-        await interaction.response.send_message(
-            f"{user} has been unbanned.",
-            ephemeral=True
-        )
-
-    except:
-        await interaction.response.send_message(
-            "invalid user id or user not banned.",
-            ephemeral=True
-        )
-    
-@bot.tree.command(name="slowmode", description="Set slowmode for this channel", guild=guild)
+@bot.tree.command(name="slowmode", description="Set slowmode")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def slowmode(interaction: discord.Interaction, seconds: int):
-
-    if seconds < 0 or seconds > 21600:
-        await interaction.response.send_message("slowmode must be between 0 and 21600 seconds (6 hours).", ephemeral=True)
-        return
-
     await interaction.channel.edit(slowmode_delay=seconds)
+    await interaction.response.send_message("done", ephemeral=True)
 
-    await interaction.response.send_message(
-        f"slowmode set to {seconds} seconds.",
-        ephemeral=True
-    )
-
-@bot.tree.command(name="nickname", description="Change a member's nickname", guild=guild)
-@app_commands.checks.has_permissions(manage_nicknames=True)
-async def nickname(interaction: discord.Interaction, member: discord.Member, new_name: str):
-
-    if member.top_role >= interaction.user.top_role:
-        await interaction.response.send_message("you cant change nickname of equal or higher role.", ephemeral=True)
-        return
-
-    await member.edit(nick=new_name)
-
-    await interaction.response.send_message(
-        f"{member.mention}'s nickname changed to **{new_name}**.",
-        ephemeral=True
-    )
-
-@bot.tree.command(
-    name="purge",
-    description="Delete a number of messages from this channel",
-    guild=guild
-)
-@app_commands.describe(amount="Number of messages to delete")
+@bot.tree.command(name="purge", description="Delete messages")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def purge(interaction: discord.Interaction, amount: int):
-
-    if amount < 1:
-        await interaction.response.send_message(
-            "you need to delete at least 1 message.",
-            ephemeral=True
-        )
-        return
-
-    if amount > 100:
-        await interaction.response.send_message(
-            "you can only delete up to 100 messages at once.",
-            ephemeral=True
-        )
-        return
-
     await interaction.response.defer(ephemeral=True)
-
     deleted = await interaction.channel.purge(limit=amount)
+    await interaction.followup.send(f"deleted {len(deleted)}", ephemeral=True)
 
-    await interaction.followup.send(
-        f"deleted {len(deleted)} messages.",
-        ephemeral=True
-    )
-
-@bot.tree.command(
-    name="info",
-    description="see some info about crumb",
-    guild=guild
-)
+@bot.tree.command(name="info", description="bot info")
 async def info(interaction: discord.Interaction):
 
-    uptime_seconds = int(time.time() - START_TIME)
-
-    hours = uptime_seconds // 3600
-    minutes = (uptime_seconds % 3600) // 60
-    seconds = uptime_seconds % 60
-
+    uptime = int(time.time() - START_TIME)
     process = psutil.Process()
 
-    cpu_usage = process.cpu_percent(interval=0.5)
-    memory_usage = process.memory_info().rss / 1024 / 1024  # MB
-
-    member_count = interaction.guild.member_count
-
     await interaction.response.send_message(
-        f"""
-**crumb info**
-
-crumb is a private bot made for this server, it's use is primarily for automation to make this server even better!
-
-**stats**
-**Uptime:** {hours}h {minutes}m {seconds}s  
-**Version:** {BOT_VERSION}  
-**CPU Usage:** {cpu_usage:.1f}%  
-**Memory Usage:** {memory_usage:.1f} MB  
-**Members:** {member_count}
-
-**open source?**
-yuh you know i got that open sourced flow... [github](https://github.com/PxslGames/crumb)
-just follow the license ok?
-""",
+        f"uptime: {uptime}s\nram: {process.memory_info().rss / 1024 / 1024:.1f}MB\nservers: {len(bot.guilds)}",
         ephemeral=True
     )
 
-@bot.tree.command(
-    name="status",
-    description="change crumb's rpc (admin only lol)",
-    guild=guild
-)
+@bot.tree.command(name="status", description="set status")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def status(interaction: discord.Interaction, text: str):
 
-    await bot.change_presence(
-        activity=discord.CustomActivity(name=text)
-    )
+    await bot.change_presence(activity=discord.CustomActivity(name=text))
+    await interaction.response.send_message("updated", ephemeral=True)
 
-    await interaction.response.send_message(
-        f"Status updated to: {text}",
-        ephemeral=True
-    )
-
-JOIN_MESSAGES = ["existed here", "has joined the server", "has arrived"]
-LEAVE_MESSAGES = ["doesnt exist here anymore", "has left the chat"]
-BOOST_MESSAGES = ["is now a booster! thank you so much!"]
+JOIN_MESSAGES = ["existed here", "has joined", "arrived"]
+LEAVE_MESSAGES = ["left", "disappeared"]
+BOOST_MESSAGES = ["boosted the server!"]
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    log.info(f"Member joined: {member} ({member.id})")
-
-    channel = bot.get_channel(SYSTEM_CHANNEL_ID)
+    channel = get_system_channel(member.guild)
     if channel:
         await channel.send(f"{member.mention} {random.choice(JOIN_MESSAGES)}")
 
 @bot.event
 async def on_member_remove(member: discord.Member):
-    log.info(f"Member left: {member} ({member.id})")
-
-    channel = bot.get_channel(SYSTEM_CHANNEL_ID)
+    channel = get_system_channel(member.guild)
     if channel:
         await channel.send(f"{member.mention} {random.choice(LEAVE_MESSAGES)}")
 
 @bot.event
-async def on_member_update(before: discord.Member, after: discord.Member):
+async def on_member_update(before, after):
     if not before.premium_since and after.premium_since:
-        log.info(f"Server boost: {after} ({after.id})")
-
-        channel = bot.get_channel(SYSTEM_CHANNEL_ID)
+        channel = get_system_channel(after.guild)
         if channel:
             await channel.send(f"{after.mention} {random.choice(BOOST_MESSAGES)}")
+
+INVITE_REGEX = re.compile(r"(discord(?:\.gg|\.com/invite)/[a-zA-Z0-9]+)")
 
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    if "crumb" in message.content.lower().strip() or bot.user.mentioned_in(message):
+    if "crumb" in message.content.lower() or bot.user.mentioned_in(message):
         await message.reply(random.choice(CRUMB_RESPONSES))
-
-    INVITE_REGEX = re.compile(r"(?:discord(?:\.gg|\.com/invite)/[a-zA-Z0-9]+)")
 
     if not message.author.guild_permissions.manage_guild:
         if INVITE_REGEX.search(message.content):
-            log.warning(f"Invite link detected from {message.author}")
-
-            try:
-                await message.delete()
-                log.info("Message deleted (invite link)")
-            except Exception as e:
-                log.error(f"Delete failed: {e}")
-
-            try:
-                await message.guild.ban(message.author, reason="Posted invite link")
-                log.info(f"User banned: {message.author}")
-            except Exception as e:
-                log.error(f"Ban failed: {e}")
-
+            await message.delete()
+            await message.guild.ban(message.author, reason="invite link")
             return
 
-    normalized_message = normalize(message.content)
-    words = normalized_message.split()
+    norm = normalize(message.content).split()
 
-    for banned_word in NORMALIZED_BANNED:
-        if banned_word in words:
-            log.warning(f"Banned word detected from {message.author}")
-
-            try:
-                await message.delete()
-                log.info("Message deleted (banned word)")
-            except Exception as e:
-                log.error(f"Delete failed: {e}")
-
-            try:
-                await message.guild.ban(message.author, reason="Used banned word")
-                log.info(f"User banned: {message.author}")
-            except Exception as e:
-                log.error(f"Ban failed: {e}")
-
+    for bad in NORMALIZED_BANNED:
+        if bad in norm:
+            await message.delete()
+            await message.guild.ban(message.author, reason="banned word")
             return
 
     await bot.process_commands(message)
