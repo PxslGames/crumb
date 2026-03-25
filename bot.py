@@ -13,7 +13,8 @@ import asyncio
 
 TOKEN = ""
 
-BOT_VERSION = "1.1.2"
+BOT_VERSION = "1.1.3"
+
 START_TIME = time.time()
 
 WARNS_FILE = "warns.json"
@@ -85,14 +86,24 @@ def normalize(text: str) -> str:
 
 NORMALIZED_BANNED = [normalize(word) for word in banned_words]
 
+synced = False
+
 @bot.event
-async def setup_hook():
-    for guild in bot.guilds:
-        try:
-            await bot.tree.sync(guild=guild)
-            log.info(f"Synced commands to {guild.name}")
-        except Exception as e:
-            log.error(f"Sync failed for {guild.name}: {e}")
+async def on_ready():
+    global synced
+
+    if not synced:
+        for guild in bot.guilds:
+            try:
+                bot.tree.copy_global_to(guild=guild)
+                await bot.tree.sync(guild=guild)
+                log.info(f"Synced commands to {guild.name}")
+            except Exception as e:
+                log.error(f"Sync failed for {guild.name}: {e}")
+
+        synced = True
+
+    log.info(f"Logged in as {bot.user}")
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
@@ -101,10 +112,6 @@ async def on_guild_join(guild: discord.Guild):
         await bot.tree.sync(guild=guild)
     except Exception as e:
         log.error(e)
-
-@bot.event
-async def on_ready():
-    log.info(f"Logged in as {bot.user}")
 
 PING_MESSAGES = [
     "clanker mode activated",
