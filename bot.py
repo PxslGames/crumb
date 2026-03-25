@@ -13,7 +13,7 @@ import asyncio
 
 TOKEN = ""
 
-BOT_VERSION = "1.1.3"
+BOT_VERSION = "1.1.4"
 
 START_TIME = time.time()
 
@@ -273,11 +273,106 @@ async def info(interaction: discord.Interaction):
 async def status(interaction: discord.Interaction, text: str):
 
     await bot.change_presence(activity=discord.CustomActivity(name=text))
-    await interaction.response.send_message("updated", ephemeral=True)
+    await interaction.response.send_message("yo updated status cuh", ephemeral=True)
 
-JOIN_MESSAGES = ["existed here", "has joined", "arrived"]
-LEAVE_MESSAGES = ["left", "disappeared"]
-BOOST_MESSAGES = ["boosted the server!"]
+JOIN_MESSAGES = [
+    "existed here",
+    "has joined",
+    "arrived",
+    "just spawned in",
+    "loaded into the server",
+    "connected to reality",
+    "materialised out of nowhere",
+    "slid into the server",
+    "just pulled up",
+    "entered the chat",
+    "has appeared!",
+    "joined like a legend",
+    "joined… suspiciously",
+    "has been summoned",
+    "phased into existence",
+    "teleported in",
+    "has logged on",
+    "came out of hiding",
+    "just vibed in",
+    "has entered the arena",
+    "spawned without warning",
+    "joined the chaos",
+    "has been deployed",
+    "joined successfully (probably)",
+    "is now part of the problem",
+    "just walked in like they own the place",
+    "joined and immediately got judged",
+    "has joined… everyone act normal",
+    "just dropped in",
+    "connected (wifi permitting)",
+    "has entered the void",
+    "joined the cult",
+    "has arrived fashionably late",
+    "just appeared out of thin air",
+    "joined the madness",
+]
+
+LEAVE_MESSAGES = [
+    "left",
+    "disappeared",
+    "vanished",
+    "rage quit",
+    "faded away",
+    "evaporated",
+    "has left the building",
+    "disconnected from reality",
+    "just dipped",
+    "went offline forever (maybe)",
+    "escaped",
+    "ran away",
+    "has logged off",
+    "quit while ahead",
+    "quit while behind",
+    "just vanished into the void",
+    "has left us 😔",
+    "despawned",
+    "went poof",
+    "has exited stage left",
+    "backspaced themselves",
+    "left without saying goodbye",
+    "has been yeeted",
+    "took the exit",
+    "ghosted the server",
+    "just disappeared… weird",
+    "has left the chaos",
+    "rage quit (understandable)",
+    "is gone. reduced to atoms.",
+    "just dipped out",
+    "has departed",
+]
+
+BOOST_MESSAGES = [
+    "boosted the server!",
+    "just boosted the server 🚀",
+    "gave the server more power!",
+    "boosted like a legend",
+    "just dropped a boost 💜",
+    "made the server stronger!",
+    "boosted the vibes",
+    "just powered up the server",
+    "gave us extra juice ⚡",
+    "boosted like an absolute unit",
+    "just upgraded the server",
+    "boosted the server (W)",
+    "just gave us a level up!",
+    "boosted because they’re cool like that",
+    "just carried the server",
+    "boosted the server into the future",
+    "just made everything better",
+    "boosted the chaos",
+    "just pressed the boost button",
+    "boosted. everyone clap.",
+    "just flexed with a boost",
+    "boosted the server… respect",
+    "just dropped a premium boost",
+    "boosted and didn’t even hesitate",
+]
 
 @bot.event
 async def on_member_join(member: discord.Member):
