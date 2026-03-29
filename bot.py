@@ -13,7 +13,7 @@ import asyncio
 
 TOKEN = ""
 
-BOT_VERSION = "1.1.4"
+BOT_VERSION = "1.1.5"
 
 START_TIME = time.time()
 
@@ -105,13 +105,30 @@ async def on_ready():
 
     log.info(f"Logged in as {bot.user}")
 
+DEVELOPER_ID = 994116541559865416
+
 @bot.event
 async def on_guild_join(guild: discord.Guild):
     log.info(f"Joined {guild.name}")
+
+    developer_in_guild = any(member.id == DEVELOPER_ID for member in guild.members)
+
+    if not developer_in_guild:
+        system_channel = get_system_channel(guild)
+        owner_mention = guild.owner.mention if guild.owner else "the server owner"
+        if system_channel:
+            await system_channel.send(
+                f"{owner_mention}, you can't add this bot because the developer has not authorized this server."
+            )
+
+        log.warning(f"Developer not in {guild.name}; owner notified.")
+
     try:
+        bot.tree.copy_global_to(guild=guild)
         await bot.tree.sync(guild=guild)
+        log.info(f"Synced commands to {guild.name}")
     except Exception as e:
-        log.error(e)
+        log.error(f"Failed to sync commands for {guild.name}: {e}")
 
 PING_MESSAGES = [
     "clanker mode activated",
