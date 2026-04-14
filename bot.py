@@ -13,13 +13,18 @@ import asyncio
 
 TOKEN = ""
 
-BOT_VERSION = "1.1.6"
+BOT_VERSION = "1.1.7"
 
 START_TIME = time.time()
 
 WARNS_FILE = "warns.json"
 
 OWNER_ID = 994116541559865416
+
+JOIN_EMOJI = "<:join:1493694693840785598>"
+LEAVE_EMOJI = "<:leave:1493694784815235153>"
+BOOST_EMOJI = "<a:boost:1493695082799304764>"
+NEW_EMOJI = "<a:emoji:1493702510928597073>"
 
 def load_warns():
     try:
@@ -461,7 +466,7 @@ async def on_member_join(member: discord.Member):
     if channel:
         count = get_member_count(member.guild)
         await channel.send(
-            f"{member.mention} {random.choice(JOIN_MESSAGES)}, we now have {count} members!"
+            f"{JOIN_EMOJI} {member.mention} {random.choice(JOIN_MESSAGES)}, we now have {count} members!"
         )
 
 @bot.event
@@ -470,7 +475,7 @@ async def on_member_remove(member: discord.Member):
     if channel:
         count = get_member_count(member.guild)
         await channel.send(
-            f"{member.mention} {random.choice(LEAVE_MESSAGES)}, we now have {count} members!"
+            f"{LEAVE_EMOJI} {member.mention} {random.choice(LEAVE_MESSAGES)}, we now have {count} members!"
         )
 
 @bot.event
@@ -482,7 +487,7 @@ async def on_member_update(before, after):
             boosts = get_boost_count(after.guild)
 
             await channel.send(
-                f"{after.mention} {random.choice(BOOST_MESSAGES)}, we now have {boosts} boosts!")
+                f"{BOOST_EMOJI} {after.mention} {random.choice(BOOST_MESSAGES)}, we now have {boosts} boosts!")
 
 INVITE_REGEX = re.compile(r"(discord\.gg|discord\.com/invite|discordapp\.com/invite)/[a-zA-Z0-9]+")
 
@@ -524,11 +529,11 @@ async def on_guild_emojis_update(guild, before, after):
 
     for emoji in added:
         msg = random.choice(EMOJI_ADD_MESSAGES).format(emoji=str(emoji))
-        await channel.send(msg)
+        await channel.send(f"{NEW_EMOJI} {msg}")
 
     for emoji in removed:
         msg = random.choice(EMOJI_REMOVE_MESSAGES).format(emoji=str(emoji))
-        await channel.send(msg)
+        await channel.send(f"{NEW_EMOJI} {msg}")
 
 log.info("Bot starting...")
 bot.run(TOKEN)
