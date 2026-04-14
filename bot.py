@@ -19,6 +19,8 @@ START_TIME = time.time()
 
 WARNS_FILE = "warns.json"
 
+OWNER_ID = 994116541559865416
+
 def load_warns():
     try:
         with open(WARNS_FILE, "r") as f:
@@ -300,6 +302,41 @@ async def status(interaction: discord.Interaction, text: str):
 
     await bot.change_presence(activity=discord.CustomActivity(name=text))
     await interaction.response.send_message("yo updated status cuh", ephemeral=True)
+
+@bot.tree.command(name="announce", description="Send a message to all servers system channels (owner only)")
+async def announce(interaction: discord.Interaction, message: str):
+
+    if interaction.user.id != OWNER_ID:
+        return await interaction.response.send_message(
+            "you are not allowed to use this command.",
+            ephemeral=True
+        )
+
+    await interaction.response.send_message(
+        "sending announcement...",
+        ephemeral=True
+    )
+
+    sent = 0
+    failed = 0
+
+    for guild in bot.guilds:
+        channel = get_system_channel(guild)
+
+        if not channel:
+            failed += 1
+            continue
+
+        try:
+            await channel.send(f"📢 **Announcement:** {message}")
+            sent += 1
+        except:
+            failed += 1
+
+    await interaction.followup.send(
+        f"done.\nsent: {sent}\nfailed: {failed}",
+        ephemeral=True
+    )
 
 JOIN_MESSAGES = [
     "existed here",
