@@ -13,7 +13,7 @@ import asyncio
 
 TOKEN = ""
 
-BOT_VERSION = "1.1.5"
+BOT_VERSION = "1.1.6"
 
 START_TIME = time.time()
 
@@ -86,6 +86,12 @@ def normalize(text: str) -> str:
 
 NORMALIZED_BANNED = [normalize(word) for word in banned_words]
 
+def get_member_count(guild: discord.Guild) -> int:
+    return guild.member_count or len(guild.members)
+
+def get_boost_count(guild: discord.Guild) -> int:
+    return guild.premium_subscription_count or 0
+
 synced = False
 
 @bot.event
@@ -105,23 +111,9 @@ async def on_ready():
 
     log.info(f"Logged in as {bot.user}")
 
-DEVELOPER_ID = 994116541559865416
-
 @bot.event
 async def on_guild_join(guild: discord.Guild):
     log.info(f"Joined {guild.name}")
-
-    developer_in_guild = any(member.id == DEVELOPER_ID for member in guild.members)
-
-    if not developer_in_guild:
-        system_channel = get_system_channel(guild)
-        owner_mention = guild.owner.mention if guild.owner else "the server owner"
-        if system_channel:
-            await system_channel.send(
-                f"{owner_mention}, you can't add this bot because the developer has not authorized this server."
-            )
-
-        log.warning(f"Developer not in {guild.name}; owner notified.")
 
     try:
         bot.tree.copy_global_to(guild=guild)
@@ -164,14 +156,31 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     }
 
     warns[gid][uid].append(warn_data)
+    total_warns = len(warns[gid][uid])
+
     save_warns(warns)
 
     try:
-        await member.send(f"You have been warned in {interaction.guild.name}\nReason: {reason}")
+        await member.send(
+            f"You have been warned in {interaction.guild.name}\nReason: {reason}\nTotal warns: {total_warns}"
+        )
     except:
         pass
 
-    total_warns = len(warns[gid][uid])
+    if total_warns >= 5:
+        try:
+            await member.ban(reason="Reached 5 warnings")
+        except:
+            pass
+
+        warns[gid].pop(uid, None)
+        save_warns(warns)
+
+        await interaction.response.send_message(
+            f"{member.mention} reached 5 warns and was banned.",
+            ephemeral=True
+        )
+        return
 
     await interaction.response.send_message(
         f"{member.mention} warned.\nTotal warns: {total_warns}",
@@ -391,33 +400,61 @@ BOOST_MESSAGES = [
     "boosted and didn’t even hesitate",
 ]
 
+EMOJI_ADD_MESSAGES = [
+    "new emoji just dropped: {emoji}",
+    "someone cooked this emoji: {emoji}",
+    "fresh emoji alert: {emoji}",
+    "we got a new emoji: {emoji}",
+    "this just got added → {emoji}",
+    "emoji expansion pack unlocked: {emoji}",
+]
+
+EMOJI_REMOVE_MESSAGES = [
+    "rip emoji: {emoji}",
+    "this emoji got deleted: {emoji}",
+    "we lost an emoji... {emoji}",
+    "gone but not forgotten: {emoji}",
+    "emoji got yeeted: {emoji}",
+    "this one didn’t make it: {emoji}",
+]
+
 @bot.event
 async def on_member_join(member: discord.Member):
     channel = get_system_channel(member.guild)
     if channel:
-        await channel.send(f"{member.mention} {random.choice(JOIN_MESSAGES)}")
+        count = get_member_count(member.guild)
+        await channel.send(
+            f"{member.mention} {random.choice(JOIN_MESSAGES)}, we now have {count} members!"
+        )
 
 @bot.event
 async def on_member_remove(member: discord.Member):
     channel = get_system_channel(member.guild)
     if channel:
-        await channel.send(f"{member.mention} {random.choice(LEAVE_MESSAGES)}")
+        count = get_member_count(member.guild)
+        await channel.send(
+            f"{member.mention} {random.choice(LEAVE_MESSAGES)}, we now have {count} members!"
+        )
 
 @bot.event
 async def on_member_update(before, after):
     if not before.premium_since and after.premium_since:
         channel = get_system_channel(after.guild)
         if channel:
-            await channel.send(f"{after.mention} {random.choice(BOOST_MESSAGES)}")
+            members = get_member_count(after.guild)
+            boosts = get_boost_count(after.guild)
 
-INVITE_REGEX = re.compile(r"(discord(?:\.gg|\.com/invite)/[a-zA-Z0-9]+)")
+            await channel.send(
+                f"{after.mention} {random.choice(BOOST_MESSAGES)}, we now have {boosts} boosts!")
+
+INVITE_REGEX = re.compile(r"(discord\.gg|discord\.com/invite|discordapp\.com/invite)/[a-zA-Z0-9]+")
 
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    if "crumb" in message.content.lower() or bot.user.mentioned_in(message):
+    if (bot.user.mentioned_in(message) or re.search(r"\bcrumb\b", message.content.lower())):
         await message.reply(random.choice(CRUMB_RESPONSES))
 
     if not message.author.guild_permissions.manage_guild:
@@ -435,6 +472,26 @@ async def on_message(message: discord.Message):
             return
 
     await bot.process_commands(message)
+
+@bot.event
+async def on_guild_emojis_update(guild, before, after):
+    channel = get_system_channel(guild)
+    if not channel:
+        return
+
+    before_set = {e.id: e for e in before}
+    after_set = {e.id: e for e in after}
+
+    added = [e for eid, e in after_set.items() if eid not in before_set]
+    removed = [e for eid, e in before_set.items() if eid not in after_set]
+
+    for emoji in added:
+        msg = random.choice(EMOJI_ADD_MESSAGES).format(emoji=str(emoji))
+        await channel.send(msg)
+
+    for emoji in removed:
+        msg = random.choice(EMOJI_REMOVE_MESSAGES).format(emoji=str(emoji))
+        await channel.send(msg)
 
 log.info("Bot starting...")
 bot.run(TOKEN)
