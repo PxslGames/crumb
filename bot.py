@@ -71,6 +71,56 @@ class GiveawayView(discord.ui.View):
             ephemeral=True
         )
 
+async def safe_delete(msg):
+    try:
+        if msg.channel.permissions_for(msg.guild.me).manage_messages:
+            await msg.delete()
+    except:
+        pass
+
+async def issue_warn(guild, user, reason):
+    gid_str = str(guild.id)
+    uid_str = str(user.id)
+
+    warns.setdefault(gid_str, {}).setdefault(uid_str, [])
+
+    warn_data = {
+        "reason": reason,
+        "moderator": "AutoMod",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    }
+
+    warns[gid_str][uid_str].append(warn_data)
+    total_warns = len(warns[gid_str][uid_str])
+
+    await save_data()
+
+    # ✅ timeout ALWAYS on warn
+    try:
+        await user.timeout(datetime.timedelta(minutes=10), reason=reason)
+    except:
+        pass
+
+    try:
+        await user.send(
+            f"You were warned in {guild.name}\n"
+            f"Reason: {reason}\n"
+            f"Total warns: {total_warns}"
+        )
+    except:
+        pass
+
+    if total_warns >= 5:
+        try:
+            await guild.ban(user, reason="Reached 5 warnings (auto-mod)")
+        except:
+            pass
+
+        warns[gid_str].pop(uid_str, None)
+        await save_data()
+
+    return total_warns
+
 def load_data():
     if not os.path.exists(DATA_FILE):
         data = {
@@ -178,6 +228,7 @@ data.setdefault("warns", {})
 
 spam_tracker = defaultdict(list)
 spam_cooldown = {}
+warned_cooldown = set()
 SPAM_WINDOW = 3
 SPAM_LIMIT = 4
 SPAM_PUNISH_COOLDOWN = 30
@@ -782,25 +833,28 @@ async def on_message(message: discord.Message):
         gid = message.guild.id
         key = (gid, uid)
 
-        # ----------------------------
-        # HARD COOLDOWN BLOCK (raid protection)
-        # ----------------------------
-        if key in spam_cooldown and now < spam_cooldown[key]:
+        cooldown_end = spam_cooldown.get(key)
+        if cooldown_end and now < cooldown_end:
             try:
                 await message.delete()
             except:
                 pass
+
+            if key not in warned_cooldown:
+                warned_cooldown.add(key)
+                await message.channel.send(
+                    f"⏳ {message.author.mention} you're on cooldown, slow down."
+                )
+
             return
+        else:
+            warned_cooldown.discard(key)
 
-        timestamps = spam_tracker[key]
+        timestamps = spam_tracker.setdefault(key, [])
 
-        # cleanup old messages
         while timestamps and now - timestamps[0] > SPAM_WINDOW:
             timestamps.pop(0)
 
-        # ----------------------------
-        # MENTION SPAM CHECK (NEW)
-        # ----------------------------
         mention_count = (
             len(message.mentions)
             + len(message.role_mentions)
@@ -808,64 +862,28 @@ async def on_message(message: discord.Message):
         )
 
         if mention_count > 3 and not message.author.guild_permissions.manage_messages:
-            try:
-                await message.delete()
-            except:
-                pass
+            await safe_delete(message)
 
-            gid_str = str(gid)
-            uid_str = str(uid)
+            await issue_warn(
+                message.guild,
+                message.author,
+                f"Mass mentioning ({mention_count} mentions)"
+            )
 
-            warns.setdefault(gid_str, {}).setdefault(uid_str, [])
-
-            warn_data = {
-                "reason": f"Mass mentioning ({mention_count} mentions)",
-                "moderator": "AutoMod",
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            }
-
-            warns[gid_str][uid_str].append(warn_data)
-            total_warns = len(warns[gid_str][uid_str])
-
-            await save_data()
-
-            try:
-                await message.author.send(
-                    f"You were warned in {message.guild.name}\n"
-                    f"Reason: mass mentioning\n"
-                    f"Total warns: {total_warns}"
-                )
-            except:
-                pass
-
-            await message.channel.send(f"🚨 {message.author.mention} stop mass mentioning.")
-
-            if total_warns >= 5:
-                try:
-                    await message.guild.ban(message.author, reason="Mass mention spam (auto-mod)")
-                except:
-                    pass
-                warns[gid_str].pop(uid_str, None)
-                await save_data()
-
+            await message.channel.send(
+                f"🚨 {message.author.mention} stop mass mentioning."
+            )
             return
-
-        # ----------------------------
-        # STRONGER SPAM DETECTION
-        # ----------------------------
-        if len(timestamps) >= SPAM_LIMIT - 1:
-            try:
-                await message.delete()
-            except:
-                pass
 
         timestamps.append(now)
 
         if len(timestamps) >= SPAM_LIMIT:
-            spam_tracker[key].clear()
+            spam_tracker[key] = []
             spam_cooldown[key] = now + SPAM_PUNISH_COOLDOWN
 
-            # delete recent spam messages
+            await issue_warn(message.guild, message.author, "Spamming (rapid messages)")
+            await message.channel.send(f"🚨 {message.author.mention} stop spamming.")
+
             try:
                 async for msg in message.channel.history(limit=20):
                     if msg.author.id == uid and (now - msg.created_at.timestamp()) <= SPAM_WINDOW:
@@ -876,106 +894,44 @@ async def on_message(message: discord.Message):
             except:
                 pass
 
-            gid_str = str(gid)
-            uid_str = str(uid)
-
-            warns.setdefault(gid_str, {}).setdefault(uid_str, [])
-
-            warn_data = {
-                "reason": "Spamming (rapid messages)",
-                "moderator": "AutoMod",
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            }
-
-            warns[gid_str][uid_str].append(warn_data)
-            total_warns = len(warns[gid_str][uid_str])
-
-            await save_data()
-
-            try:
-                await message.author.send(
-                    f"You have been warned in {message.guild.name}\n"
-                    f"Reason: spamming\n"
-                    f"Total warns: {total_warns}"
-                )
-            except:
-                pass
-
-            await message.channel.send(f"🚨 {message.author.mention} stop spamming.")
-
-            if total_warns >= 5:
-                try:
-                    await message.guild.ban(message.author, reason="Reached 5 warnings (auto-mod)")
-                except:
-                    pass
-
-                warns[gid_str].pop(uid_str, None)
-                await save_data()
-
             return
 
-        # ----------------------------
-        # CRUMB REPLY
-        # ----------------------------
         if "crumb" in message.content.lower():
             await message.reply(random.choice(CRUMB_RESPONSES))
 
-        # ----------------------------
-        # INVITE BLOCKING
-        # ----------------------------
         if not message.author.guild_permissions.manage_messages:
             if INVITE_REGEX.search(message.content):
-                await message.delete()
-                await message.channel.send(f"{message.author.mention} no invite links allowed.")
-                await message.author.timeout(datetime.timedelta(minutes=10))
+                await safe_delete(message)
+
+                await message.channel.send(
+                    f"{message.author.mention} no invite links allowed."
+                )
+
+                try:
+                    await message.author.timeout(datetime.timedelta(minutes=10))
+                except:
+                    pass
+
                 return
 
-        # ----------------------------
-        # BANNED WORDS
-        # ----------------------------
         norm = normalize(message.content)
         words = set(norm.split())
         matched = words.intersection(NORMALIZED_BANNED)
 
         if matched:
-            await message.delete()
+            await safe_delete(message)
 
             bad = next(iter(matched))
 
-            gid_str = str(message.guild.id)
-            uid_str = str(message.author.id)
+            await issue_warn(
+                message.guild,
+                message.author,
+                f"Used banned word: {bad}"
+            )
 
-            warns.setdefault(gid_str, {}).setdefault(uid_str, [])
-
-            warn_data = {
-                "reason": f"Used banned word: {bad}",
-                "moderator": "AutoMod",
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            }
-
-            warns[gid_str][uid_str].append(warn_data)
-            total_warns = len(warns[gid_str][uid_str])
-
-            await save_data()
-
-            try:
-                await message.author.send(
-                    f"You were warned in {message.guild.name}\n"
-                    f"Reason: used a banned word\n"
-                    f"Total warns: {total_warns}"
-                )
-            except:
-                pass
-
-            if total_warns >= 5:
-                try:
-                    await message.guild.ban(message.author, reason="Reached 5 warnings (auto-mod)")
-                except:
-                    pass
-
-                warns[gid_str].pop(uid_str, None)
-                await save_data()
-
+            await message.channel.send(
+                f"🚨 {message.author.mention} watch your language."
+            )
             return
 
         await bot.process_commands(message)
