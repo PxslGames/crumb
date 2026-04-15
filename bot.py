@@ -10,14 +10,14 @@ import psutil
 import time
 import datetime
 import asyncio
+import os
+from collections import defaultdict, deque
 
-TOKEN = ""
-
-BOT_VERSION = "1.1.7"
+BOT_VERSION = "1.1.8"
 
 START_TIME = time.time()
 
-WARNS_FILE = "warns.json"
+DATA_FILE = "data.json"
 
 OWNER_ID = 994116541559865416
 
@@ -26,18 +26,86 @@ LEAVE_EMOJI = "<:leave:1493694784815235153>"
 BOOST_EMOJI = "<a:boost:1493695082799304764>"
 NEW_EMOJI = "<a:emoji:1493702510928597073>"
 
-def load_warns():
-    try:
-        with open(WARNS_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
+data_lock = asyncio.Lock()
 
-def save_warns(data):
-    with open(WARNS_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+class GiveawayView(discord.ui.View):
+    def __init__(self, message_id: int):
+        super().__init__(timeout=None)
+        self.message_id = str(message_id)
 
-warns = load_warns()
+    @discord.ui.button(
+        label="Enter Giveaway 🎉",
+        style=discord.ButtonStyle.green
+    )
+    async def enter(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        async with data_lock:
+            giveaways = data.setdefault("giveaways", {})
+            g = giveaways.get(self.message_id)
+
+            if not g:
+                return await interaction.response.send_message(
+                    "this giveaway is over or invalid",
+                    ephemeral=True
+                )
+
+            participants = g.setdefault("participants", [])
+            uid = interaction.user.id
+
+            if uid in participants:
+                participants.remove(uid)
+                await save_data()
+                return await interaction.response.send_message(
+                    "you left the giveaway",
+                    ephemeral=True
+                )
+
+            participants.append(uid)
+            await save_data()
+
+        await interaction.response.send_message(
+            "you entered the giveaway",
+            ephemeral=True
+        )
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        data = {
+            "token": "",
+            "warns": {},
+            "giveaways": {},
+            "reminders": []
+        }
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+        return data
+
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
+
+async def save_data():
+    async with data_lock:
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+
+data = load_data()
+TOKEN = data.get("token", "")
+
+if not TOKEN:
+    raise RuntimeError("Bot token is missing in data.json")
+
+def parse_time(t: str):
+    t = t.lower()
+    if t.endswith("m"):
+        return int(t[:-1]) * 60
+    if t.endswith("h"):
+        return int(t[:-1]) * 3600
+    if t.endswith("s"):
+        return int(t[:-1])
+    return int(t)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -101,6 +169,19 @@ def get_boost_count(guild: discord.Guild) -> int:
 
 synced = False
 
+def get_warns():
+    return data.setdefault("warns", {})
+
+warns = data["warns"]
+
+data.setdefault("warns", {})
+
+spam_tracker = defaultdict(list)
+spam_cooldown = {}
+SPAM_WINDOW = 3
+SPAM_LIMIT = 4
+SPAM_PUNISH_COOLDOWN = 30
+
 @bot.event
 async def on_ready():
     global synced
@@ -115,8 +196,21 @@ async def on_ready():
                 log.error(f"Sync failed for {guild.name}: {e}")
 
         synced = True
+    
+    bot.loop.create_task(reminder_loop())
+    bot.loop.create_task(giveaway_loop())
+    log.info("created loops for reminders and giveaways")
 
     log.info(f"Logged in as {bot.user}")
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error):
+    log.exception(error)
+
+    if interaction.response.is_done():
+        await interaction.followup.send("something broke 💀", ephemeral=True)
+    else:
+        await interaction.response.send_message("something broke 💀", ephemeral=True)
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
@@ -159,13 +253,13 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     warn_data = {
         "reason": reason,
         "moderator": str(interaction.user),
-        "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     }
 
     warns[gid][uid].append(warn_data)
     total_warns = len(warns[gid][uid])
 
-    save_warns(warns)
+    await save_data()
 
     try:
         await member.send(
@@ -181,7 +275,7 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
             pass
 
         warns[gid].pop(uid, None)
-        save_warns(warns)
+        await save_data()
 
         await interaction.response.send_message(
             f"{member.mention} reached 5 warns and was banned.",
@@ -225,7 +319,7 @@ async def clear_warns(interaction: discord.Interaction, member: discord.Member):
 
     if gid in warns and uid in warns[gid]:
         warns[gid][uid] = []
-        save_warns(warns)
+        await save_data()
         await interaction.response.send_message("cleared", ephemeral=True)
     else:
         await interaction.response.send_message("no warns", ephemeral=True)
@@ -333,7 +427,7 @@ async def announce(interaction: discord.Interaction, message: str):
             continue
 
         try:
-            await channel.send(f"📢 **Announcement:** {message}")
+            await channel.send(message)
             sent += 1
         except:
             failed += 1
@@ -342,6 +436,176 @@ async def announce(interaction: discord.Interaction, message: str):
         f"done.\nsent: {sent}\nfailed: {failed}",
         ephemeral=True
     )
+
+@bot.tree.command(name="stats", description="view server stats")
+async def stats(interaction: discord.Interaction):
+    guild = interaction.guild
+
+    total_members = guild.member_count or len(guild.members)
+    bots = sum(1 for m in guild.members if m.bot)
+    humans = total_members - bots
+
+    online = sum(
+        1 for m in guild.members
+        if m.status != discord.Status.offline
+    )
+
+    boosts = guild.premium_subscription_count or 0
+    boost_level = guild.premium_tier
+
+    text_channels = len(guild.text_channels)
+    voice_channels = len(guild.voice_channels)
+    categories = len(guild.categories)
+
+    roles = len(guild.roles)
+    emojis = len(guild.emojis)
+    stickers = len(guild.stickers)
+
+    msg = (
+        f"**{guild.name} stats**\n\n"
+
+        f"👥 **Members**\n"
+        f"Total: {total_members}\n"
+        f"Humans: {humans}\n"
+        f"Bots: {bots}\n"
+        f"Online: {online}\n\n"
+
+        f"🚀 **Boosts**\n"
+        f"Boosts: {boosts}\n"
+        f"Level: {boost_level}\n\n"
+
+        f"📊 **Server**\n"
+        f"Roles: {roles}\n"
+        f"Emojis: {emojis}\n"
+        f"Stickers: {stickers}\n\n"
+
+        f"📁 **Channels**\n"
+        f"Text: {text_channels}\n"
+        f"Voice: {voice_channels}\n"
+        f"Categories: {categories}\n\n"
+
+        f"ID: {guild.id}"
+    )
+
+    await interaction.response.send_message(msg, ephemeral=True)
+
+async def reminder_loop():
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
+        now = time.time()
+        changed = False
+
+        for r in list(data["reminders"]):
+            if now >= r["time"]:
+                try:
+                    channel = bot.get_channel(r["channel_id"])
+                    user = await bot.fetch_user(r["user_id"])
+                    await channel.send(f"⏰ {user.mention} reminder: {r['text']}")
+                except:
+                    pass
+
+                data["reminders"].remove(r)
+                changed = True
+
+        if changed:
+            await save_data()
+
+        await asyncio.sleep(5)
+
+@bot.tree.command(name="remindme", description="set a reminder")
+async def remindme(interaction: discord.Interaction, time_str: str, *, reminder: str):
+
+    seconds = parse_time(time_str)
+
+    data["reminders"].append({
+        "user_id": interaction.user.id,
+        "channel_id": interaction.channel.id,
+        "time": time.time() + seconds,
+        "text": reminder
+    })
+
+    await save_data()
+
+    await interaction.response.send_message(
+        f"⏰ I’ll remind you in {time_str}: {reminder}",
+        ephemeral=True
+    )
+
+async def giveaway_loop():
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
+        now = time.time()
+        changed = False
+
+        for msg_id in list(data["giveaways"].keys()):
+            g = data["giveaways"][msg_id]
+
+            if now >= g["end_time"]:
+                channel = bot.get_channel(g["channel_id"])
+                participants = g["participants"]
+
+                if not participants:
+                    await channel.send(f"🎉 Giveaway ended: {g['prize']}\nNo entries 😭")
+                else:
+                    winners = random.sample(
+                        participants,
+                        k=min(g["winners"], len(participants))
+                    )
+
+                    mentions = []
+                    for uid in winners:
+                        user = await bot.fetch_user(uid)
+                        mentions.append(user.mention)
+
+                    await channel.send(
+                        f"🎉 **GIVEAWAY ENDED** 🎉\n"
+                        f"Prize: {g['prize']}\n"
+                        f"Winners: {', '.join(mentions)}"
+                    )
+
+                del data["giveaways"][msg_id]
+                changed = True
+
+        if changed:
+            await save_data()
+
+        await asyncio.sleep(5)
+
+@bot.tree.command(name="giveaway", description="create a giveaway")
+@app_commands.checks.has_permissions(administrator=True)
+async def giveaway(interaction: discord.Interaction, winners: int, time_str: str, *, prize: str):
+
+    seconds = parse_time(time_str)
+    end_time = time.time() + seconds
+
+    embed = discord.Embed(
+        title="🎉 GIVEAWAY 🎉",
+        description=(
+            f"**Prize:** {prize}\n"
+            f"**Winners:** {winners}\n"
+            f"**Ends in:** {time_str}\n\n"
+            "Press the button below to enter!"
+        ),
+        color=discord.Color.gold()
+    )
+
+    msg = await interaction.channel.send(embed=embed)
+    view = GiveawayView(msg.id)
+    await msg.edit(view=view)
+
+    data["giveaways"][str(msg.id)] = {
+        "channel_id": interaction.channel.id,
+        "winners": winners,
+        "prize": prize,
+        "end_time": end_time,
+        "participants": []
+    }
+
+    await save_data()
+
+    await interaction.response.send_message("giveaway created", ephemeral=True)
 
 JOIN_MESSAGES = [
     "existed here",
@@ -460,6 +724,22 @@ EMOJI_REMOVE_MESSAGES = [
     "this one didn’t make it: {emoji}",
 ]
 
+STICKER_ADD_MESSAGES = [
+    "new sticker just dropped: {sticker}",
+    "fresh sticker added: {sticker}",
+    "we got a new sticker: {sticker}",
+    "sticker unlocked: {sticker}",
+    "this sticker just appeared → {sticker}",
+]
+
+STICKER_REMOVE_MESSAGES = [
+    "rip sticker: {sticker}",
+    "sticker got deleted: {sticker}",
+    "we lost a sticker... {sticker}",
+    "gone but not forgotten: {sticker}",
+    "sticker got yeeted: {sticker}",
+]
+
 @bot.event
 async def on_member_join(member: discord.Member):
     channel = get_system_channel(member.guild)
@@ -493,27 +773,215 @@ INVITE_REGEX = re.compile(r"(discord\.gg|discord\.com/invite|discordapp\.com/inv
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild:
-        return
-
-    if (bot.user.mentioned_in(message) or re.search(r"\bcrumb\b", message.content.lower())):
-        await message.reply(random.choice(CRUMB_RESPONSES))
-
-    if not message.author.guild_permissions.manage_guild:
-        if INVITE_REGEX.search(message.content):
-            await message.delete()
-            await message.guild.ban(message.author, reason="invite link")
+    try:
+        if message.author.bot or not message.guild:
             return
 
-    norm = normalize(message.content).split()
+        now = time.time()
+        uid = message.author.id
+        gid = message.guild.id
+        key = (gid, uid)
 
-    for bad in NORMALIZED_BANNED:
-        if bad in norm:
-            await message.delete()
-            await message.guild.ban(message.author, reason="banned word")
+        # ----------------------------
+        # HARD COOLDOWN BLOCK (raid protection)
+        # ----------------------------
+        if key in spam_cooldown and now < spam_cooldown[key]:
+            try:
+                await message.delete()
+            except:
+                pass
             return
 
-    await bot.process_commands(message)
+        timestamps = spam_tracker[key]
+
+        # cleanup old messages
+        while timestamps and now - timestamps[0] > SPAM_WINDOW:
+            timestamps.pop(0)
+
+        # ----------------------------
+        # MENTION SPAM CHECK (NEW)
+        # ----------------------------
+        mention_count = (
+            len(message.mentions)
+            + len(message.role_mentions)
+            + (1 if message.mention_everyone else 0)
+        )
+
+        if mention_count > 3 and not message.author.guild_permissions.manage_messages:
+            try:
+                await message.delete()
+            except:
+                pass
+
+            gid_str = str(gid)
+            uid_str = str(uid)
+
+            warns.setdefault(gid_str, {}).setdefault(uid_str, [])
+
+            warn_data = {
+                "reason": f"Mass mentioning ({mention_count} mentions)",
+                "moderator": "AutoMod",
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            }
+
+            warns[gid_str][uid_str].append(warn_data)
+            total_warns = len(warns[gid_str][uid_str])
+
+            await save_data()
+
+            try:
+                await message.author.send(
+                    f"You were warned in {message.guild.name}\n"
+                    f"Reason: mass mentioning\n"
+                    f"Total warns: {total_warns}"
+                )
+            except:
+                pass
+
+            await message.channel.send(f"🚨 {message.author.mention} stop mass mentioning.")
+
+            if total_warns >= 5:
+                try:
+                    await message.guild.ban(message.author, reason="Mass mention spam (auto-mod)")
+                except:
+                    pass
+                warns[gid_str].pop(uid_str, None)
+                await save_data()
+
+            return
+
+        # ----------------------------
+        # STRONGER SPAM DETECTION
+        # ----------------------------
+        if len(timestamps) >= SPAM_LIMIT - 1:
+            try:
+                await message.delete()
+            except:
+                pass
+
+        timestamps.append(now)
+
+        if len(timestamps) >= SPAM_LIMIT:
+            spam_tracker[key].clear()
+            spam_cooldown[key] = now + SPAM_PUNISH_COOLDOWN
+
+            # delete recent spam messages
+            try:
+                async for msg in message.channel.history(limit=20):
+                    if msg.author.id == uid and (now - msg.created_at.timestamp()) <= SPAM_WINDOW:
+                        try:
+                            await msg.delete()
+                        except:
+                            pass
+            except:
+                pass
+
+            gid_str = str(gid)
+            uid_str = str(uid)
+
+            warns.setdefault(gid_str, {}).setdefault(uid_str, [])
+
+            warn_data = {
+                "reason": "Spamming (rapid messages)",
+                "moderator": "AutoMod",
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            }
+
+            warns[gid_str][uid_str].append(warn_data)
+            total_warns = len(warns[gid_str][uid_str])
+
+            await save_data()
+
+            try:
+                await message.author.send(
+                    f"You have been warned in {message.guild.name}\n"
+                    f"Reason: spamming\n"
+                    f"Total warns: {total_warns}"
+                )
+            except:
+                pass
+
+            await message.channel.send(f"🚨 {message.author.mention} stop spamming.")
+
+            if total_warns >= 5:
+                try:
+                    await message.guild.ban(message.author, reason="Reached 5 warnings (auto-mod)")
+                except:
+                    pass
+
+                warns[gid_str].pop(uid_str, None)
+                await save_data()
+
+            return
+
+        # ----------------------------
+        # CRUMB REPLY
+        # ----------------------------
+        if "crumb" in message.content.lower():
+            await message.reply(random.choice(CRUMB_RESPONSES))
+
+        # ----------------------------
+        # INVITE BLOCKING
+        # ----------------------------
+        if not message.author.guild_permissions.manage_messages:
+            if INVITE_REGEX.search(message.content):
+                await message.delete()
+                await message.channel.send(f"{message.author.mention} no invite links allowed.")
+                await message.author.timeout(datetime.timedelta(minutes=10))
+                return
+
+        # ----------------------------
+        # BANNED WORDS
+        # ----------------------------
+        norm = normalize(message.content)
+        words = set(norm.split())
+        matched = words.intersection(NORMALIZED_BANNED)
+
+        if matched:
+            await message.delete()
+
+            bad = next(iter(matched))
+
+            gid_str = str(message.guild.id)
+            uid_str = str(message.author.id)
+
+            warns.setdefault(gid_str, {}).setdefault(uid_str, [])
+
+            warn_data = {
+                "reason": f"Used banned word: {bad}",
+                "moderator": "AutoMod",
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            }
+
+            warns[gid_str][uid_str].append(warn_data)
+            total_warns = len(warns[gid_str][uid_str])
+
+            await save_data()
+
+            try:
+                await message.author.send(
+                    f"You were warned in {message.guild.name}\n"
+                    f"Reason: used a banned word\n"
+                    f"Total warns: {total_warns}"
+                )
+            except:
+                pass
+
+            if total_warns >= 5:
+                try:
+                    await message.guild.ban(message.author, reason="Reached 5 warnings (auto-mod)")
+                except:
+                    pass
+
+                warns[gid_str].pop(uid_str, None)
+                await save_data()
+
+            return
+
+        await bot.process_commands(message)
+
+    except Exception:
+        log.exception("on_message crashed")
 
 @bot.event
 async def on_guild_emojis_update(guild, before, after):
@@ -534,6 +1002,36 @@ async def on_guild_emojis_update(guild, before, after):
     for emoji in removed:
         msg = random.choice(EMOJI_REMOVE_MESSAGES).format(emoji=str(emoji))
         await channel.send(f"{NEW_EMOJI} {msg}")
+
+@bot.event
+async def on_guild_stickers_update(guild, before, after):
+    channel = get_system_channel(guild)
+    if not channel:
+        return
+
+    before_set = {s.id: s for s in before}
+    after_set = {s.id: s for s in after}
+
+    added = [s for sid, s in after_set.items() if sid not in before_set]
+    removed = [s for sid, s in before_set.items() if sid not in after_set]
+
+    for sticker in added:
+        msg = random.choice(STICKER_ADD_MESSAGES).format(sticker=sticker.name)
+        try:
+            await channel.send(
+                f"{NEW_EMOJI} {msg}",
+                stickers=[sticker]
+            )
+        except:
+            await channel.send(f"{NEW_EMOJI} {msg}")
+
+    for sticker in removed:
+        msg = random.choice(STICKER_REMOVE_MESSAGES).format(sticker=sticker.name)
+
+        if sticker.format == discord.StickerFormatType.lottie:
+            await channel.send(f"{NEW_EMOJI} {msg} (animated sticker)")
+        else:
+            await channel.send(f"{NEW_EMOJI} {msg}\n{sticker.url}")
 
 log.info("Bot starting...")
 bot.run(TOKEN)
