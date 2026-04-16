@@ -13,7 +13,7 @@ import asyncio
 import os
 from collections import defaultdict, deque
 
-BOT_VERSION = "1.1.9"
+BOT_VERSION = "1.2.0"
 
 START_TIME = time.time()
 
@@ -101,6 +101,9 @@ async def save_data():
 def _write_data():
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=4)
+
+def get_giveaways():
+    return data.setdefault("giveaways", {})
 
 data = load_data()
 TOKEN = data.get("token", "")
@@ -210,8 +213,11 @@ async def on_ready():
         synced = True
     
     bot.loop.create_task(reminder_loop())
+    log.info("Started reminder loop")
     bot.loop.create_task(giveaway_loop())
-    log.info("created loops for reminders and giveaways")
+    log.info("Started giveaway loop")
+    bot.loop.create_task(cleanup_giveaways())
+    log.info("Started giveaway cleanup loop")
 
     log.info(f"Logged in as {bot.user}")
 
@@ -564,7 +570,7 @@ async def reminder_loop():
                     user = await bot.fetch_user(r["user_id"])
                     await channel.send(
                         f"⏰ {user.mention} reminder: {r['text']}",
-                        allowed_mentions=discord.AllowedMentions.none()
+                        allowed_mentions=discord.AllowedMentions(users=True)
                     )
                 except:
                     pass
@@ -596,53 +602,91 @@ async def remindme(interaction: discord.Interaction, time_str: str, *, reminder:
         ephemeral=True
     )
 
+async def cleanup_giveaways():
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
+        try:
+            giveaways = get_giveaways()
+
+            to_delete = [k for k, v in giveaways.items() if v.get("ended")]
+
+            for k in to_delete:
+                del giveaways[k]
+
+            if to_delete:
+                await save_data()
+
+        except Exception:
+            log.exception("cleanup_giveaways crashed")
+
+        await asyncio.sleep(300)
+
 async def giveaway_loop():
     await bot.wait_until_ready()
 
     while not bot.is_closed():
-        now = time.time()
-        changed = False
+        try:
+            now = time.time()
+            changed = False
 
-        for msg_id in list(data["giveaways"].keys()):
-            g = data["giveaways"][msg_id]
+            giveaways = get_giveaways()
 
-            if now < g["end_time"]:
-                continue
+            for msg_id in list(giveaways.keys()):
+                try:
+                    g = giveaways[msg_id]
 
-            channel = bot.get_channel(g["channel_id"])
+                    if g.get("ended"):
+                        continue
 
-            try:
-                msg = await channel.fetch_message(int(msg_id))
-            except:
-                del data["giveaways"][msg_id]
-                continue
+                    if now < g["end_time"]:
+                        continue
 
-            users = set()
+                    channel = bot.get_channel(g["channel_id"])
+                    if channel is None:
+                        continue
 
-            for reaction in msg.reactions:
-                if str(reaction.emoji) == "🎉":
-                    async for user in reaction.users():
-                        if not user.bot:
-                            users.add(user.id)
+                    try:
+                        msg = await channel.fetch_message(int(msg_id))
+                    except:
+                        giveaways[msg_id]["ended"] = True
+                        changed = True
+                        continue
 
-            if not users:
-                await channel.send(f"🎉 Giveaway ended: {g['prize']}\nNo entries 😭")
-            else:
-                winners = random.sample(users, k=min(g["winners"], len(users)))
+                    users = set()
 
-                mentions = [f"<@{u}>" for u in winners]
+                    for reaction in msg.reactions:
+                        if str(reaction.emoji) == "🎉":
+                            async for user in reaction.users():
+                                if not user.bot:
+                                    users.add(user.id)
 
-                await channel.send(
-                    f"🎉 **GIVEAWAY ENDED** 🎉\n"
-                    f"Prize: {g['prize']}\n"
-                    f"Winners: {', '.join(mentions)}"
-                )
+                    if len(users) == 0:
+                        await channel.send(f"🎉 Giveaway ended: **{g['prize']}**\nNo entries 😭")
 
-            del data["giveaways"][msg_id]
-            changed = True
+                    else:
+                        winner_count = min(g["winners"], len(users))
+                        winners = random.sample(list(users), k=winner_count)
 
-        if changed:
-            await save_data()
+                        mentions = [f"<@{u}>" for u in winners]
+
+                        await channel.send(
+                            f"🎉 **GIVEAWAY ENDED** 🎉\n"
+                            f"Prize: **{g['prize']}**\n"
+                            f"Winners: {', '.join(mentions)}"
+                        )
+
+                    giveaways[msg_id]["ended"] = True
+                    changed = True
+
+                except Exception:
+                    log.exception(f"Giveaway error for {msg_id}")
+
+            if changed:
+                await save_data()
+
+        except Exception:
+            log.exception("giveaway_loop crashed")
 
         await asyncio.sleep(5)
 
@@ -662,11 +706,15 @@ async def giveaway(interaction: discord.Interaction, winners: int, time_str: str
 
     await msg.add_reaction("🎉")
 
-    data["giveaways"][str(msg.id)] = {
+    giveaways = get_giveaways()
+
+    giveaways[str(msg.id)] = {
         "channel_id": interaction.channel.id,
+        "message_id": msg.id,
         "winners": winners,
         "prize": prize,
-        "end_time": end_time
+        "end_time": end_time,
+        "ended": False
     }
 
     await save_data()
