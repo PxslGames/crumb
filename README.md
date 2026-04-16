@@ -1,2 +1,2 @@
 # crumb
-the private discord bot for pxsl.dev
+the private discord bot for my discord servers
