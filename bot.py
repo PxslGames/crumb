@@ -13,7 +13,7 @@ import asyncio
 import os
 from collections import defaultdict, deque
 
-BOT_VERSION = "1.1.8"
+BOT_VERSION = "1.1.9"
 
 START_TIME = time.time()
 
@@ -27,49 +27,6 @@ BOOST_EMOJI = "<a:boost:1493695082799304764>"
 NEW_EMOJI = "<a:emoji:1493702510928597073>"
 
 data_lock = asyncio.Lock()
-
-class GiveawayView(discord.ui.View):
-    def __init__(self, message_id: int):
-        super().__init__(timeout=None)
-        self.message_id = str(message_id)
-
-    @discord.ui.button(
-        label="Enter Giveaway 🎉",
-        style=discord.ButtonStyle.green
-    )
-    async def enter(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
-        async with data_lock:
-            giveaways = data.setdefault("giveaways", {})
-            g = giveaways.get(self.message_id)
-
-            if not g:
-                return await interaction.response.send_message(
-                    "this giveaway is over or invalid",
-                    ephemeral=True
-                )
-
-            participants = g.setdefault("participants", [])
-            uid = interaction.user.id
-
-            if uid in participants:
-                participants.remove(uid)
-                await save_data()
-                return await interaction.response.send_message(
-                    "you left the giveaway",
-                    ephemeral=True
-                )
-
-            participants.append(uid)
-            await save_data()
-
-        await interaction.response.send_message(
-            "you entered the giveaway",
-            ephemeral=True
-        )
 
 async def safe_delete(msg):
     try:
@@ -98,8 +55,9 @@ async def issue_warn(guild, user, reason):
     # ✅ timeout ALWAYS on warn
     try:
         await user.timeout(datetime.timedelta(minutes=10), reason=reason)
-    except:
-        pass
+        
+    except Exception as e:
+        log.warning(f"Timeout failed: {e}")
 
     try:
         await user.send(
@@ -138,8 +96,11 @@ def load_data():
 
 async def save_data():
     async with data_lock:
-        with open(DATA_FILE, "w") as f:
-            json.dump(data, f, indent=4)
+        await asyncio.to_thread(_write_data)
+
+def _write_data():
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
 data = load_data()
 TOKEN = data.get("token", "")
@@ -273,6 +234,55 @@ async def on_guild_join(guild: discord.Guild):
         log.info(f"Synced commands to {guild.name}")
     except Exception as e:
         log.error(f"Failed to sync commands for {guild.name}: {e}")
+
+async def update_giveaway_message(message_id: int, channel_id: int):
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        return
+
+    try:
+        msg = await channel.fetch_message(message_id)
+    except:
+        return
+
+    users = set()
+
+    for reaction in msg.reactions:
+        if str(reaction.emoji) == "🎉":
+            async for user in reaction.users():
+                if not user.bot:
+                    users.add(user.id)
+
+    g = data["giveaways"].get(str(message_id))
+    if not g:
+        return
+
+    await msg.edit(
+        content=(
+            f"🎉 **{g['prize']}**\n"
+            f"Winners: {g['winners']}\n"
+            f"Ends: <t:{int(g['end_time'])}:R>\n"
+            f"Entries: {len(users)}"
+        )
+    )
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    if str(payload.message_id) not in data["giveaways"]:
+        return
+    if str(payload.emoji) != "🎉":
+        return
+
+    await update_giveaway_message(payload.message_id, payload.channel_id)
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    if str(payload.message_id) not in data["giveaways"]:
+        return
+    if str(payload.emoji) != "🎉":
+        return
+
+    await update_giveaway_message(payload.message_id, payload.channel_id)
 
 PING_MESSAGES = [
     "clanker mode activated",
@@ -552,7 +562,10 @@ async def reminder_loop():
                 try:
                     channel = bot.get_channel(r["channel_id"])
                     user = await bot.fetch_user(r["user_id"])
-                    await channel.send(f"⏰ {user.mention} reminder: {r['text']}")
+                    await channel.send(
+                        f"⏰ {user.mention} reminder: {r['text']}",
+                        allowed_mentions=discord.AllowedMentions.none()
+                    )
                 except:
                     pass
 
@@ -593,31 +606,40 @@ async def giveaway_loop():
         for msg_id in list(data["giveaways"].keys()):
             g = data["giveaways"][msg_id]
 
-            if now >= g["end_time"]:
-                channel = bot.get_channel(g["channel_id"])
-                participants = g["participants"]
+            if now < g["end_time"]:
+                continue
 
-                if not participants:
-                    await channel.send(f"🎉 Giveaway ended: {g['prize']}\nNo entries 😭")
-                else:
-                    winners = random.sample(
-                        participants,
-                        k=min(g["winners"], len(participants))
-                    )
+            channel = bot.get_channel(g["channel_id"])
 
-                    mentions = []
-                    for uid in winners:
-                        user = await bot.fetch_user(uid)
-                        mentions.append(user.mention)
-
-                    await channel.send(
-                        f"🎉 **GIVEAWAY ENDED** 🎉\n"
-                        f"Prize: {g['prize']}\n"
-                        f"Winners: {', '.join(mentions)}"
-                    )
-
+            try:
+                msg = await channel.fetch_message(int(msg_id))
+            except:
                 del data["giveaways"][msg_id]
-                changed = True
+                continue
+
+            users = set()
+
+            for reaction in msg.reactions:
+                if str(reaction.emoji) == "🎉":
+                    async for user in reaction.users():
+                        if not user.bot:
+                            users.add(user.id)
+
+            if not users:
+                await channel.send(f"🎉 Giveaway ended: {g['prize']}\nNo entries 😭")
+            else:
+                winners = random.sample(users, k=min(g["winners"], len(users)))
+
+                mentions = [f"<@{u}>" for u in winners]
+
+                await channel.send(
+                    f"🎉 **GIVEAWAY ENDED** 🎉\n"
+                    f"Prize: {g['prize']}\n"
+                    f"Winners: {', '.join(mentions)}"
+                )
+
+            del data["giveaways"][msg_id]
+            changed = True
 
         if changed:
             await save_data()
@@ -631,27 +653,20 @@ async def giveaway(interaction: discord.Interaction, winners: int, time_str: str
     seconds = parse_time(time_str)
     end_time = time.time() + seconds
 
-    embed = discord.Embed(
-        title="🎉 GIVEAWAY 🎉",
-        description=(
-            f"**Prize:** {prize}\n"
-            f"**Winners:** {winners}\n"
-            f"**Ends in:** {time_str}\n\n"
-            "Press the button below to enter!"
-        ),
-        color=discord.Color.gold()
+    msg = await interaction.channel.send(
+        f"🎉 **{prize}**\n"
+        f"Winners: {winners}\n"
+        f"Ends: <t:{int(end_time)}:R>\n"
+        f"Entries: 0"
     )
 
-    msg = await interaction.channel.send(embed=embed)
-    view = GiveawayView(msg.id)
-    await msg.edit(view=view)
+    await msg.add_reaction("🎉")
 
     data["giveaways"][str(msg.id)] = {
         "channel_id": interaction.channel.id,
         "winners": winners,
         "prize": prize,
-        "end_time": end_time,
-        "participants": []
+        "end_time": end_time
     }
 
     await save_data()
