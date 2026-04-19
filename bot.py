@@ -268,7 +268,6 @@ async def update_giveaway_message(message_id: int, channel_id: int):
             f"🎉 **{g['prize']}**\n"
             f"Winners: {g['winners']}\n"
             f"Ends: <t:{int(g['end_time'])}:R>\n"
-            f"Entries: {len(users)}"
         )
     )
 
